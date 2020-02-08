@@ -37,7 +37,7 @@ def run_query(sparql_endpoint,sparql_query):
 
    # check response content-type header
    if ctype.find('json') < 0:
-      raise Exception('Content is not JSON',ctype)      # not a SELECT?
+      return result      # not a SELECT?
 
    # convert result in JSON string into python dict
    return json.loads(result)
