@@ -7,21 +7,43 @@ import numpy as np
 import json
 from datetime import datetime, date, time
 
+#------------------------------------------------------
 # Runs SPARQL query at SPARQL endpoint and
-# returns results as Python 'dict'
+# return results as a Python 'dict' (in the SPARQL1.1 results format)
 # (for SPARQL1.1 results format refer: https://www.w3.org/TR/sparql11-results-json)
-#       sparql_endpoint - ex: 'localhost:7070' or 'localhost' or '10.102.0.5:7070'
-#       sparql_query - 'select (count(*) as ?c) {?s?p?o}'
-def run_query(sparql_endpoint,sparql_query):
-   # create HTTP connection to SPARQL endpoint
-   conn = HTTPConnection(sparql_endpoint,timeout=100) #may throw HTTPConnection exception
+#
+#       sparql_endpoint: 'host:port' ex: '192.168.0.64:7070', 'data.nobelprize.org'
+#       sparql_query: ex: 'select (count(*) as ?c) {?s?p?o}'
+#       headers: REST api headers ex: {'accept':'application/sparql-results+xml'}
+#       params: SPARQL protocol params ex: {'default-graph-uri':['graph1','graph2']}
+#------------------------------------------------------
+#
+def run_query(sparql_endpoint,sparql_query,headers={},params={}):
+   # initialize headers
+   req_hdrs = {'user-agent': 'AnzoGraph azg3.py'}
+   for key,val in headers.items():
+      req_hdrs[key.lower()] = val
+   raw = True
+   if 0 == len(req_hdrs.get('accept','')):
+      # request result in json, if not specified
+      req_hdrs['accept'] = 'application/sparql-results+json'
+      raw = False
+   # override any content-type set
+   req_hdrs['content-type'] = 'application/x-www-form-urlencoded'
+
+   # initialize params
+   req_params = {}
+   for p,v in params.items():
+      req_params[p] = v
+   req_params['query'] = sparql_query
+
    # urlencode query for sending
-   docbody = urlencode({'query':sparql_query})
-   # request result in json
-   hdrs = {'Accept': 'application/sparql-results+json',
-           'Content-type': 'application/x-www-form-urlencoded'}
+   docbody = urlencode(req_params,doseq=True)
+
    # send post request
-   conn.request('POST','/sparql',docbody,hdrs) #may throw exception
+   # create HTTP connection to SPARQL endpoint
+   conn = HTTPConnection(sparql_endpoint,timeout=500) #may throw HTTPConnection exception
+   conn.request('POST','/sparql',docbody,req_hdrs) #may throw exception
 
    # read response
    resp = conn.getresponse()
@@ -36,17 +58,24 @@ def run_query(sparql_endpoint,sparql_query):
    conn.close()
 
    # check response content-type header
-   if ctype.find('json') < 0:
+   if raw or ctype.find('json') < 0:
       return result      # not a SELECT?
 
    # convert result in JSON string into python dict
    return json.loads(result)
 
-# Creates Pandas DataFrame from the results of running
-# running SPARQL query at sparql endpoint
-def create_dataframe(sparql_endpoint,sparql_query):
+
+#------------------------------------------------------
+# Returns pandas DataFrame from the results of running a sparql_query at sparql_endpoint
+#       sparql_endpoint: 'host:port' ex: '192.168.0.64:7070', 'data.nobelprize.org'
+#       sparql_query: ex: 'select (count(*) as ?c) {?s?p?o}'
+#       headers: REST api headers ex: {'accept':'application/sparql-results+xml'}
+#       params: SPARQL protocol params ex: {'default-graph-uri':'tpch'}
+#------------------------------------------------------
+#
+def create_dataframe(sparql_endpoint,sparql_query,headers={},params={}):
    # run query
-   result = run_query(sparql_endpoint,sparql_query)  # may throw exception
+   result = run_query(sparql_endpoint,sparql_query,headers,params)  # may throw exception
    # result is in SPARQL results format refer: https://www.w3.org/TR/sparql11-results-json/
    cols = result.get('head',{}).get('vars',[])
    rows = result.get('results',{}).get('bindings',[])
@@ -61,8 +90,7 @@ def create_dataframe(sparql_endpoint,sparql_query):
       nptype[col] = None
 
    # for all rows, save (columnar) data in coldata[] for each col
-   for rx in range(len(rows)):
-      row = rows[rx]
+   for row in rows:
       for col in cols:
          cell = row.get(col,None)
          if cell is None:  # unbound value
@@ -77,11 +105,10 @@ def create_dataframe(sparql_endpoint,sparql_query):
          langtag = cell.get('xml:lang','')
          typeuri = cell.get('datatype','')
          pdtype = 'object'
-         if vtype == 'bnode':
-            pdval = '_:'+pdval
-            coltype[col] = 'object'
+         if vtype == 'uri':
+            pdval = '<'+pdval+'>'
          elif langtag != '':
-            pdval = '"'+pdval+'"'+'@'+langtag
+            pdval = '"'+pdval+'"@'+langtag
             coltype[col] = 'object'
          elif typeuri != '':
             #vtype in ('typed-literal')
@@ -120,18 +147,3 @@ def typed_value(typeuri,val):
    elif typeuri in ('time'):
       return pd.time, time.fromisoformat(val)
    return 'object', val
-
-# example usage
-import sys
-# Usage: azg3.py 10.102.20.55:7070 qryfile.rq
-if __name__ == '__main__':
-   if len(sys.argv) >= 3:
-      try:
-         with open(sys.argv[2],'r') as infp:
-            qrystr = infp.read()
-            df = create_dataframe(sys.argv[1],qrystr)
-            print(df)
-            sys.exit(0)
-      except Exception as ex:
-         print(ex)
-   print('Usage:',sys.argv[0],'<server:port>','<filename>')
